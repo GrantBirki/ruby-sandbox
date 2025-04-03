@@ -73,20 +73,21 @@ module HTTP
     # @param **options [Hash] Additional options passed directly to Net::HTTP::Persistent
     def initialize(
       endpoint,
-      name: "http-client",
+      name: nil,
       log: nil,
       default_headers: {},
       request_timeout: nil,
       max_retries: 1,
       # Default timeouts
-      open_timeout: 5,
-      read_timeout: 60,
-      idle_timeout: 30,
+      # https://github.com/ruby/net-http/blob/1df862896825af04f7bf9711b9b4613bbb77cad6/lib/net/http.rb#L1152-L1154
+      open_timeout: nil, # generally 60
+      read_timeout: nil, # generally 60
+      idle_timeout: 5, # set specifically for keep_alive with Net::HTTP::Persistent - if a connection is idle for this long, it will be closed and automatically reopened on the next request
       # Pass through any other options to Net::HTTP::Persistent
       **options
     )
       @uri = URI.parse(endpoint)
-      @name = name
+      @name = name || ENV.fetch("HTTP_CLIENT_NAME", "http-client")
       @request_timeout = request_timeout
       @max_retries = max_retries
       @default_headers = normalize_headers(default_headers)
