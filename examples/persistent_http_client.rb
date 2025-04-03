@@ -31,12 +31,9 @@ client = HTTP::Client.new("http://127.0.0.1:8080")
   timed_get_request(client, "/")
 end
 
-# Sleep for 30 seconds to allow the server to close a connection on us
-puts "\nSleeping for 30 seconds...\n"
-sleep 30
-
-alive = client.alive?
-puts "Client is alive: #{alive}"
+# Sleep for 31 seconds to allow the server to close a connection on us
+puts "\nSleeping for 31 seconds...\n"
+sleep 31
 
 # Make another few requests and see if the client automatically rebuilds the connection
 3.times do
@@ -65,7 +62,7 @@ client.close!
 # Response Code: 200
 # Request Time: 0.67 ms (subsequent requests reuse the connection)
 
-# Sleeping for 30 seconds... (this will cause our connection to be closed as stale from the server)
+# Sleeping for 31 seconds... (this will cause our connection to be closed as stale from the server)
 
 # Response Body: Hello, world!
 # Response Code: 200

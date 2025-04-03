@@ -21,7 +21,7 @@
 # client = HTTP::Client.new("https://api.example.com",
 #   open_timeout: 5,     # connection establishment timeout (seconds)
 #   read_timeout: 10,    # response read timeout (seconds)
-#   keep_alive_timeout: 30,  # how long to keep idle connections open (seconds)
+#   idle_timeout: 30,  # how long to keep idle connections open (seconds)
 #   request_timeout: 15  # overall request timeout (seconds)
 # )
 #
@@ -32,8 +32,14 @@
 #     "Authorization" => "Bearer default-token"
 #   }
 # )
-# # Request-specific headers will override defaults with the same key
-# response = client.get("/users", headers: {"Authorization" => "Bearer override-token"})
+
+# Benefits:
+#
+# 1. Reuse connections for multiple requests
+# 2. Automatically rebuild the connection if it is closed by the server
+# 3. Automatically retry requests on connection failures if max_retries is set to a value >1
+# 4. Easy to use and configure
+# 5. Supports timeouts for the entire request (open_timeout + read_timeout) and for idle connections (idle_timeout)
 
 require "logger"
 require "net/http/persistent"
@@ -58,36 +64,46 @@ module HTTP
     # @param endpoint [String] Endpoint URL to send requests to
     # @param name [String] Name for the client (used in logs)
     # @param log [Logger] Custom logger instance (optional)
-    # @param open_timeout [Integer] Timeout in seconds for connection establishment
-    # @param read_timeout [Integer] Timeout in seconds for reading response
-    # @param keep_alive_timeout [Integer] How long to keep idle connections open in seconds
+    # @param default_headers [Hash] Default headers to include in all requests
     # @param request_timeout [Integer, nil] Overall timeout for the entire request (nil for no timeout)
     # @param max_retries [Integer] Maximum number of retries on connection failures
-    # @param default_headers [Hash] Default headers to include in all requests
-    # @param pool_size [Integer] Connection pool size for the persistent HTTP client
+    # @param open_timeout [Integer] Timeout in seconds for connection establishment
+    # @param read_timeout [Integer] Timeout in seconds for reading response
+    # @param idle_timeout [Integer] How long to keep idle connections open in seconds (maps to keep_alive)
+    # @param **options [Hash] Additional options passed directly to Net::HTTP::Persistent
     def initialize(
       endpoint,
       name: "http-client",
       log: nil,
-      open_timeout: 5,
-      read_timeout: 60,
-      keep_alive_timeout: 30,
+      default_headers: {},
       request_timeout: nil,
       max_retries: 1,
-      default_headers: {},
-      pool_size: 5
+      # Default timeouts
+      open_timeout: 5,
+      read_timeout: 60,
+      idle_timeout: 30,
+      # Pass through any other options to Net::HTTP::Persistent
+      **options
     )
       @uri = URI.parse(endpoint)
       @name = name
-      @open_timeout = open_timeout
-      @read_timeout = read_timeout
-      @keep_alive_timeout = keep_alive_timeout
       @request_timeout = request_timeout
       @max_retries = max_retries
-      @pool_size = pool_size
       @default_headers = normalize_headers(default_headers)
-      @http = create_http_client
       @log = log || create_logger
+
+      # Create options hash for Net::HTTP::Persistent
+      persistent_options = {
+        name: @name,
+        open_timeout: open_timeout,
+        read_timeout: read_timeout,
+        idle_timeout: idle_timeout
+      }
+
+      # Merge any additional options passed through
+      persistent_options.merge!(options)
+
+      @http = create_http_client(persistent_options)
     end
 
     def head(path, headers: {}, params: {})
@@ -126,17 +142,6 @@ module HTTP
       @http.shutdown
     end
 
-    # Method to check connection status
-    def alive?(path = "/")
-      begin
-        get(path, headers: { "Connection" => "close" })
-        true
-      rescue => e
-        @log.debug("Connection check failed: #{e.message}")
-        false
-      end
-    end
-
     private
 
     def create_logger
@@ -144,8 +149,20 @@ module HTTP
     end
 
     # Create a persistent HTTP client with configured timeouts and SSL settings
-    def create_http_client
-      http = Net::HTTP::Persistent.new(name: @name, pool_size: @pool_size)
+    def create_http_client(options)
+      # Extract only the parameters accepted by Net::HTTP::Persistent.new
+      constructor_options = {}
+      constructor_options[:name] = options.delete(:name) if options.key?(:name)
+      constructor_options[:proxy] = options.delete(:proxy) if options.key?(:proxy)
+      constructor_options[:pool_size] = options.delete(:pool_size) if options.key?(:pool_size)
+
+      # Create the HTTP client with only the supported constructor options
+      http = Net::HTTP::Persistent.new(**constructor_options)
+
+      # Apply timeouts and other options as attributes after initialization
+      http.open_timeout = options[:open_timeout] if options.key?(:open_timeout)
+      http.read_timeout = options[:read_timeout] if options.key?(:read_timeout)
+      http.idle_timeout = options[:idle_timeout] if options.key?(:idle_timeout)
 
       # Configure SSL if using HTTPS
       if @uri.scheme == "https"
@@ -153,10 +170,15 @@ module HTTP
         http.ca_file = ENV["SSL_CERT_FILE"] if ENV["SSL_CERT_FILE"]
       end
 
-      # Configure timeouts
-      http.open_timeout = @open_timeout
-      http.read_timeout = @read_timeout
-      http.idle_timeout = @keep_alive_timeout
+      # Apply any other options that might be supported as attributes
+      options.each do |key, value|
+        setter = "#{key}="
+        if http.respond_to?(setter)
+          http.send(setter, value) # rubocop:disable GitHub/AvoidObjectSendWithDynamicMethod
+        else
+          @log.debug("Ignoring unsupported option: #{key}")
+        end
+      end
 
       http
     end
@@ -239,11 +261,11 @@ module HTTP
                     end
 
         duration = Time.now - start_time
-        @log.debug("Request completed: method=#{method}, path=#{path}, status=#{response.code}, duration=#{duration.round(3)}s")
+        @log.debug("Request completed: method=#{method}, path=#{path}, status=#{response.code}, duration=#{format_duration_ms(duration)}")
         response
       rescue Timeout::Error => e
         duration = Time.now - start_time
-        @log.error("Request timed out after #{duration.round(3)}s: method=#{method}, path=#{path}")
+        @log.error("Request timed out after #{format_duration_ms(duration)}: method=#{method}, path=#{path}")
         raise
       rescue Net::HTTP::Persistent::Error, Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNRESET => e
         retries += 1
@@ -253,10 +275,18 @@ module HTTP
           retry
         else
           duration = Time.now - start_time
-          @log.error("Connection failed after #{retries} retries (#{duration.round(3)}s): #{e.message}")
+          @log.error("Connection failed after #{retries} retries (#{format_duration_ms(duration)}): #{e.message}")
           raise
         end
       end
+    end
+
+    # Format duration in milliseconds
+    #
+    # @param duration [Float] Duration in seconds
+    # @return [String] Formatted duration in milliseconds
+    def format_duration_ms(duration)
+      "#{(duration * 1000).round(2)} ms"
     end
 
     # Encode path parameters into a URL query string
