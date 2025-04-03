@@ -4,5 +4,4 @@ set -e
 
 source script/env "$@"
 
-# Add your own logic below for running a ruby application
-bundle exec ruby lib/cli.rb "$@"
+bundle exec puma config.ru --tag ruby-sandbox --config config/puma.rb

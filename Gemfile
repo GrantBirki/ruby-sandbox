@@ -2,6 +2,7 @@
 
 source "https://rubygems.org"
 
+gem "puma", "~> 6.6"
 gem "sinatra", "~> 4.1", ">= 4.1.1"
 
 group :development do
