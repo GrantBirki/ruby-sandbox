@@ -121,6 +121,22 @@ module HTTP
       @default_headers = normalize_headers(headers)
     end
 
+    # Method to explicitly close all persistent connections
+    def close!
+      @http.shutdown
+    end
+
+    # Method to check connection status
+    def alive?(path = "/")
+      begin
+        get(path, headers: { "Connection" => "close" })
+        true
+      rescue => e
+        @log.debug("Connection check failed: #{e.message}")
+        false
+      end
+    end
+
     private
 
     def create_logger

@@ -32,13 +32,19 @@ client = HTTP::Client.new("http://127.0.0.1:8080")
 end
 
 # Sleep for 30 seconds to allow the server to close a connection on us
-puts "Sleeping for 30 seconds..."
+puts "\nSleeping for 30 seconds...\n"
 sleep 30
+
+alive = client.alive?
+puts "Client is alive: #{alive}"
 
 # Make another few requests and see if the client automatically rebuilds the connection
 3.times do
   timed_get_request(client, "/")
 end
+
+# now close the client
+client.close!
 
 # The clean example of using this client looks like this:
 # client = HTTP::Client.new("http://127.0.0.1:8080")
