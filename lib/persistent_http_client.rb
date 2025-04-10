@@ -291,6 +291,8 @@ class Net::HTTP::Ext
       normalized_headers[key] = value
     end
 
+    normalized_headers = validate_host_header(normalized_headers)
+
     case method
     when :get, :head
       full_path = encode_path_params(path, params)
@@ -316,6 +318,18 @@ class Net::HTTP::Ext
     normalized_headers.each { |key, value| request[key] = value }
 
     request
+  end
+
+  def validate_host_header(normalized_headers)
+    # Validate the Host header
+    if normalized_headers["host"] && normalized_headers["host"] != @uri.host
+      raise ArgumentError, "Host header does not match the request URI host: expected #{@uri.host}, got #{normalized_headers['host']}"
+    end
+
+    # Ensure the Host header is set to the URI's host if not explicitly provided
+    normalized_headers["host"] ||= @uri.host
+
+    return normalized_headers
   end
 
   # Execute an HTTP request with automatic retries on connection failures
