@@ -23,7 +23,7 @@ end
 
 # Benchmark Persistent HTTP Client
 def benchmark_persistent_http_client
-  client = HTTP::Client.new(HOST)
+  client = Net::HTTP::Ext.new(HOST)
   total_time = Benchmark.realtime do
     ATTEMPTS.times do |i|
       response = client.get("/")

@@ -24,7 +24,7 @@ end
 # This is useful for long-lived clients, such as a CLI or a background job
 # This helps because building a new client for each request sends extra TCP packets
 # By reusing connections, we can reduce the number of TCP packets sent and improve performance
-client = HTTP::Client.new("http://127.0.0.1:8080")
+client = Net::HTTP::Ext.new("http://127.0.0.1:8080")
 
 # Perform multiple requests
 3.times do
@@ -44,7 +44,7 @@ end
 client.close!
 
 # The clean example of using this client looks like this:
-# client = HTTP::Client.new("http://127.0.0.1:8080")
+# client = Net::HTTP::Ext.new("http://127.0.0.1:8080")
 # response = client.get("/")
 # puts "Response Body: #{response.body}"
 # puts "Response Code: #{response.code}"

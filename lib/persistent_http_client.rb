@@ -44,264 +44,314 @@
 require "logger"
 require "net/http/persistent"
 require "timeout"
+require "uri"
+require "json"
 
-module HTTP
-  class Client
-    VERB_MAP = {
-      head: Net::HTTP::Head,
-      get: Net::HTTP::Get,
-      post: Net::HTTP::Post,
-      put: Net::HTTP::Put,
-      delete: Net::HTTP::Delete,
-      patch: Net::HTTP::Patch
-    }.freeze
+class Net::HTTP::Ext
+  VERB_MAP = {
+    head: Net::HTTP::Head,
+    get: Net::HTTP::Get,
+    post: Net::HTTP::Post,
+    put: Net::HTTP::Put,
+    delete: Net::HTTP::Delete,
+    patch: Net::HTTP::Patch
+  }.freeze
 
-    # Expose the HTTP client so that we can customize client-level settings
-    attr_accessor :http, :default_headers
+  # Expose the HTTP client so that we can customize client-level settings
+  attr_accessor :http, :default_headers
 
-    # Create a new persistent HTTP client
-    #
-    # @param endpoint [String] Endpoint URL to send requests to
-    # @param name [String] Name for the client (used in logs)
-    # @param log [Logger] Custom logger instance (optional)
-    # @param default_headers [Hash] Default headers to include in all requests
-    # @param request_timeout [Integer, nil] Overall timeout for the entire request (nil for no timeout)
-    # @param max_retries [Integer] Maximum number of retries on connection failures
-    # @param open_timeout [Integer] Timeout in seconds for connection establishment
-    # @param read_timeout [Integer] Timeout in seconds for reading response
-    # @param idle_timeout [Integer] How long to keep idle connections open in seconds (maps to keep_alive)
-    # @param **options Additional options passed directly to Net::HTTP::Persistent
-    # Example:
-    # client = HTTP::Client.new("https://api.example.com", proxy: URI("http://proxy.example.com:8080"))
-    def initialize(
-      endpoint,
-      name: nil,
-      log: nil,
-      default_headers: {},
-      request_timeout: nil,
-      max_retries: 1,
-      # Default timeouts
-      # https://github.com/ruby/net-http/blob/1df862896825af04f7bf9711b9b4613bbb77cad6/lib/net/http.rb#L1152-L1154
-      open_timeout: nil, # generally 60
-      read_timeout: nil, # generally 60
-      idle_timeout: 5, # set specifically for keep_alive with Net::HTTP::Persistent - if a connection is idle for this long, it will be closed and automatically reopened on the next request
-      # Pass through any other options to Net::HTTP::Persistent
-      **options
-    )
-      @uri = URI.parse(endpoint)
-      @name = name || ENV.fetch("HTTP_CLIENT_NAME", "http-client")
-      @request_timeout = request_timeout
-      @max_retries = max_retries
-      @default_headers = normalize_headers(default_headers)
-      @log = log || create_logger
+  # Create a new persistent HTTP client
+  #
+  # @param endpoint [String] Endpoint URL to send requests to
+  # @param name [String] Name for the client (used in logs)
+  # @param log [Logger] Custom logger instance (optional)
+  # @param default_headers [Hash] Default headers to include in all requests
+  # @param request_timeout [Integer, nil] Overall timeout for the entire request (nil for no timeout)
+  # @param max_retries [Integer] Maximum number of retries on connection failures
+  # @param open_timeout [Integer] Timeout in seconds for connection establishment
+  # @param read_timeout [Integer] Timeout in seconds for reading response
+  # @param idle_timeout [Integer] How long to keep idle connections open in seconds (maps to keep_alive)
+  # @param ssl_cert_file [String] Path to a custom CA certificate file (optional)
+  # @param **options Additional options passed directly to Net::HTTP::Persistent
+  # Example:
+  # client = HTTP::Client.new("https://api.example.com", proxy: URI("http://proxy.example.com:8080"))
+  def initialize(
+    endpoint,
+    name: nil,
+    log: nil,
+    default_headers: {},
+    request_timeout: 30,
+    max_retries: 1,
+    # Default timeouts
+    # https://github.com/ruby/net-http/blob/1df862896825af04f7bf9711b9b4613bbb77cad6/lib/net/http.rb#L1152-L1154
+    open_timeout: nil, # generally 60
+    read_timeout: nil, # generally 60
+    idle_timeout: 5, # set specifically for keep_alive with Net::HTTP::Persistent - if a connection is idle for this long, it will be closed and automatically reopened on the next request
+    # Pass through any other options to Net::HTTP::Persistent
+    ssl_cert_file: nil,
+    **options
+  )
+    @uri = URI.parse(endpoint)
+    @name = name || ENV.fetch("HTTP_CLIENT_NAME", "http-client")
+    @request_timeout = request_timeout
+    @max_retries = max_retries
+    @default_headers = normalize_headers(default_headers)
+    @log = log || create_logger
+    @ssl_cert_file = ssl_cert_file || ENV.fetch("SSL_CERT_FILE", nil)
 
-      # Create options hash for Net::HTTP::Persistent
-      persistent_options = {
-        name: @name,
-        open_timeout: open_timeout,
-        read_timeout: read_timeout,
-        idle_timeout: idle_timeout
-      }
+    # Create options hash for Net::HTTP::Persistent
+    persistent_options = {
+      name: @name,
+      open_timeout: open_timeout,
+      read_timeout: read_timeout,
+      idle_timeout: idle_timeout
+    }
 
-      # Merge any additional options passed through
-      persistent_options.merge!(options)
+    # Merge any additional options passed through
+    persistent_options.merge!(options)
 
-      @http = create_http_client(persistent_options)
-    end
+    @http = create_http_client(persistent_options)
+  end
 
-    def head(path, headers: {}, params: {})
-      request(:head, path, headers: headers, params: params)
-    end
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash] Parameters to send as query parameters
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Make a HEAD request
+  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   response = client.head("/users")
+  def head(path, headers: {}, params: {})
+    request(:head, path, headers: headers, params: params)
+  end
 
-    def get(path, headers: {}, params: {})
-      request(:get, path, headers: headers, params: params)
-    end
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash, String] Parameters to send with the request
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Make a simple GET request
+  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   response = client.get("/users")
+  def get(path, headers: {}, params: {})
+    request(:get, path, headers: headers, params: params)
+  end
 
-    def post(path, headers: {}, params: {})
-      request(:post, path, headers: headers, params: params)
-    end
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash, String] Parameters to send as request body
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Create a new resource
+  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   response = client.post("/users", params: {name: "John", email: "john@example.com"})
+  def post(path, headers: {}, params: {})
+    request(:post, path, headers: headers, params: params)
+  end
 
-    def put(path, headers: {}, params: {})
-      request(:put, path, headers: headers, params: params)
-    end
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash, String] Parameters to send as request body
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Update a resource
+  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   response = client.put("/users/123", params: {name: "John Updated"})
+  def put(path, headers: {}, params: {})
+    request(:put, path, headers: headers, params: params)
+  end
 
-    def delete(path, headers: {}, params: {})
-      request(:delete, path, headers: headers, params: params)
-    end
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash, String] Parameters to send as query parameters
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Delete a resource
+  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   response = client.delete("/users/123")
+  def delete(path, headers: {}, params: {})
+    request(:delete, path, headers: headers, params: params)
+  end
 
-    def patch(path, headers: {}, params: {})
-      request(:patch, path, headers: headers, params: params)
-    end
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash, String] Parameters to send as request body
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Partially update a resource
+  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   response = client.patch("/users/123", params: {status: "inactive"})
+  def patch(path, headers: {}, params: {})
+    request(:patch, path, headers: headers, params: params)
+  end
 
-    # Set or update default headers
-    #
-    # @param headers [Hash] Headers to set as default
-    def set_default_headers(headers)
-      @default_headers = normalize_headers(headers)
-    end
+  # Set or update default headers
+  #
+  # @param headers [Hash] Headers to set as default
+  def set_default_headers(headers)
+    @default_headers = normalize_headers(headers)
+  end
 
-    # Method to explicitly close all persistent connections
-    def close!
-      @http.shutdown
-    end
+  # Method to explicitly close all persistent connections
+  def close!
+    @http.shutdown
+  end
 
-    private
+  private
 
-    def create_logger
-      Logger.new($stdout, level: ENV.fetch("LOG_LEVEL", "INFO").upcase)
-    end
+  def create_logger
+    Logger.new($stdout, level: ENV.fetch("LOG_LEVEL", "INFO").upcase)
+  end
 
-    # Create a persistent HTTP client with configured timeouts and SSL settings
-    def create_http_client(options)
-      # Extract only the parameters accepted by Net::HTTP::Persistent.new
-      constructor_options = {}
-      constructor_options[:name] = options.delete(:name) if options.key?(:name)
-      constructor_options[:proxy] = options.delete(:proxy) if options.key?(:proxy)
-      constructor_options[:pool_size] = options.delete(:pool_size) if options.key?(:pool_size)
+  # Create a persistent HTTP client with configured timeouts and SSL settings
+  def create_http_client(options)
+    # Extract only the parameters accepted by Net::HTTP::Persistent.new
+    constructor_options = {}
+    constructor_options[:name] = options.delete(:name) if options.key?(:name)
+    constructor_options[:proxy] = options.delete(:proxy) if options.key?(:proxy)
+    constructor_options[:pool_size] = options.delete(:pool_size) if options.key?(:pool_size)
 
-      # Create the HTTP client with only the supported constructor options
-      http = Net::HTTP::Persistent.new(**constructor_options)
+    # Create the HTTP client with only the supported constructor options
+    http = Net::HTTP::Persistent.new(**constructor_options)
 
-      # Apply timeouts and other options as attributes after initialization
-      http.open_timeout = options[:open_timeout] if options.key?(:open_timeout)
-      http.read_timeout = options[:read_timeout] if options.key?(:read_timeout)
-      http.idle_timeout = options[:idle_timeout] if options.key?(:idle_timeout)
+    # Apply timeouts and other options as attributes after initialization
+    http.open_timeout = options[:open_timeout] if options.key?(:open_timeout)
+    http.read_timeout = options[:read_timeout] if options.key?(:read_timeout)
+    http.idle_timeout = options[:idle_timeout] if options.key?(:idle_timeout)
 
-      # Configure SSL if using HTTPS
-      if @uri.scheme == "https"
-        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
-        http.ca_file = ENV["SSL_CERT_FILE"] if ENV["SSL_CERT_FILE"]
+    # Configure SSL if using HTTPS with safe defaults
+    if @uri.scheme == "https"
+      http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+      if options[:verify_hostname] == true && http.respond_to?(:verify_hostname=)
+        http.verify_hostname = true
       end
-
-      # Apply any other options that might be supported as attributes
-      options.each do |key, value|
-        setter = "#{key}="
-        if http.respond_to?(setter)
-          http.send(setter, value) # rubocop:disable GitHub/AvoidObjectSendWithDynamicMethod
-        else
-          @log.debug("Ignoring unsupported option: #{key}")
-        end
-      end
-
-      http
+      http.ca_file = @ssl_cert_file if @ssl_cert_file
     end
 
-    # Normalize headers by converting keys to lowercase
-    #
-    # @param headers [Hash] Headers to normalize
-    # @return [Hash] Normalized headers with lowercase keys
-    def normalize_headers(headers)
-      result = {}
-      headers.each do |key, value|
-        normalized_key = key.to_s.downcase
-        result[normalized_key] = value
-      end
-      result
-    end
-
-    # Build an HTTP request with proper headers and parameters
-    #
-    # @param method [Symbol] HTTP method (:get, :post, etc)
-    # @param path [String] Request path
-    # @param headers [Hash] Request headers
-    # @param params [Hash] Request parameters or body
-    # @return [Net::HTTP::Request] The prepared request object
-    def build_request(method, path, headers: {}, params: {})
-      raise ArgumentError, "Querystring must be sent via `params` or `path` but not both." if path.include?("?") && !params.empty?
-
-      # Merge and normalize headers (default headers < request-specific headers)
-      normalized_headers = @default_headers.dup
-      normalize_headers(headers).each do |key, value|
-        normalized_headers[key] = value
-      end
-
-      case method
-      when :get, :head
-        full_path = encode_path_params(path, params)
-        request = VERB_MAP[method].new(full_path)
+    # Apply any other options that might be supported as attributes
+    options.each do |key, value|
+      setter = "#{key}="
+      if http.respond_to?(setter)
+        http.send(setter, value) # rubocop:disable GitHub/AvoidObjectSendWithDynamicMethod
       else
-        request = VERB_MAP[method].new(path)
-
-        if !params.empty?
-          if !normalized_headers.key?("content-type")
-            normalized_headers["content-type"] = "application/json"
-            request.body = params.to_json
-          elsif normalized_headers["content-type"].include?("x-www-form-urlencoded")
-            request.body = URI.encode_www_form(params)
-          elsif params.is_a?(String)
-            request.body = params
-          else
-            request.body = params.to_json
-          end
-        end
+        @log.debug("Ignoring unsupported option: #{key}")
       end
-
-      # Add normalized headers to request
-      normalized_headers.each { |key, value| request[key] = value }
-
-      request
     end
 
-    # Execute an HTTP request with automatic retries on connection failures
-    #
-    # @param method [Symbol] HTTP method (:get, :post, etc)
-    # @param path [String] Request path
-    # @param headers [Hash] Request headers
-    # @param params [Hash] Request parameters or body
-    # @return [Net::HTTPResponse] The HTTP response
-    def request(method, path, headers: {}, params: {})
-      req = build_request(method, path, headers: headers, params: params)
-      retries = 0
-      start_time = Time.now
+    http
+  end
 
-      begin
-        response = if @request_timeout
-                     Timeout.timeout(@request_timeout) do
-                       @http.request(@uri, req)
-                     end
-                    else
-                      @http.request(@uri, req)
-                    end
+  # Normalize headers by converting keys to lowercase
+  #
+  # @param headers [Hash] Headers to normalize
+  # @return [Hash] Normalized headers with lowercase keys
+  def normalize_headers(headers)
+    return {} if headers.nil?
 
-        duration = Time.now - start_time
-        @log.debug("Request completed: method=#{method}, path=#{path}, status=#{response.code}, duration=#{format_duration_ms(duration)}")
-        response
-      rescue Timeout::Error => e
-        duration = Time.now - start_time
-        @log.error("Request timed out after #{format_duration_ms(duration)}: method=#{method}, path=#{path}")
-        raise
-      rescue Net::HTTP::Persistent::Error, Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNRESET => e
-        retries += 1
-        if retries <= @max_retries
-          @log.debug("Connection failed: #{e.message} - rebuilding HTTP client (retry #{retries}/#{@max_retries})")
-          @http = create_http_client
-          retry
+    result = {}
+    headers.each do |key, value|
+      normalized_key = key.to_s.downcase
+      result[normalized_key] = value
+    end
+    result
+  end
+
+  # Build an HTTP request with proper headers and parameters
+  #
+  # @param method [Symbol] HTTP method (:get, :post, etc)
+  # @param path [String] Request path
+  # @param headers [Hash] Request headers
+  # @param params [Hash] Request parameters or body
+  # @return [Net::HTTP::Request] The prepared request object
+  def build_request(method, path, headers: {}, params: {})
+    raise ArgumentError, "Querystring must be sent via `params` or `path` but not both." if path.include?("?") && !params.empty?
+
+    # Merge and normalize headers (default headers < request-specific headers)
+    normalized_headers = @default_headers.dup
+    normalize_headers(headers).each do |key, value|
+      normalized_headers[key] = value
+    end
+
+    case method
+    when :get, :head
+      full_path = encode_path_params(path, params)
+      request = VERB_MAP[method].new(full_path)
+    else
+      request = VERB_MAP[method].new(path)
+
+      if !params.empty?
+        if !normalized_headers.key?("content-type")
+          normalized_headers["content-type"] = "application/json"
+          request.body = params.to_json
+        elsif normalized_headers["content-type"].include?("x-www-form-urlencoded")
+          request.body = URI.encode_www_form(params)
+        elsif params.is_a?(String)
+          request.body = params
         else
-          duration = Time.now - start_time
-          @log.error("Connection failed after #{retries} retries (#{format_duration_ms(duration)}): #{e.message}")
-          raise
+          request.body = params.to_json
         end
       end
     end
 
-    # Format duration in milliseconds
-    #
-    # @param duration [Float] Duration in seconds
-    # @return [String] Formatted duration in milliseconds
-    def format_duration_ms(duration)
-      "#{(duration * 1000).round(2)} ms"
-    end
+    # Add normalized headers to request
+    normalized_headers.each { |key, value| request[key] = value }
 
-    # Encode path parameters into a URL query string
-    #
-    # @param path [String] The base path
-    # @param params [Hash] Parameters to encode
-    # @return [String] The path with encoded parameters
-    def encode_path_params(path, params)
-      return path if params.nil? || params.empty?
+    request
+  end
 
-      encoded = URI.encode_www_form(params)
-      [path, encoded].join("?")
+  # Execute an HTTP request with automatic retries on connection failures
+  #
+  # @param method [Symbol] HTTP method (:get, :post, etc)
+  # @param path [String] Request path
+  # @param headers [Hash] Request headers
+  # @param params [Hash] Request parameters or body
+  # @return [Net::HTTPResponse] The HTTP response
+  def request(method, path, headers: {}, params: {})
+    req = build_request(method, path, headers: headers, params: params)
+    retries = 0
+    start_time = Time.now
+
+    begin
+      response = if @request_timeout
+                   Timeout.timeout(@request_timeout) do
+                     @http.request(@uri, req)
+                   end
+                  else
+                    @http.request(@uri, req)
+                  end
+
+      duration = Time.now - start_time
+      @log.debug("Request completed: method=#{method}, path=#{path}, status=#{response.code}, duration=#{format_duration_ms(duration)}")
+      response
+    rescue Timeout::Error => e
+      duration = Time.now - start_time
+      @log.error("Request timed out after #{format_duration_ms(duration)}: method=#{method}, path=#{path}")
+      raise
+    rescue Net::HTTP::Persistent::Error, Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNRESET => e
+      retries += 1
+      if retries <= @max_retries
+        @log.debug("Connection failed: #{e.message} - rebuilding HTTP client (retry #{retries}/#{@max_retries})")
+        @http = create_http_client
+        retry
+      else
+        duration = Time.now - start_time
+        @log.error("Connection failed after #{retries} retries (#{format_duration_ms(duration)}): #{e.message}")
+        raise
+      end
     end
+  end
+
+  # Format duration in milliseconds
+  #
+  # @param duration [Float] Duration in seconds
+  # @return [String] Formatted duration in milliseconds
+  def format_duration_ms(duration)
+    "#{(duration * 1000).round(2)} ms"
+  end
+
+  # Encode path parameters into a URL query string
+  #
+  # @param path [String] The base path
+  # @param params [Hash] Parameters to encode
+  # @return [String] The path with encoded parameters
+  def encode_path_params(path, params)
+    return path if params.nil? || params.empty?
+
+    encoded = URI.encode_www_form(params)
+    [path, encoded].join("?")
   end
 end
