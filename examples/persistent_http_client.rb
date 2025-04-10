@@ -26,6 +26,8 @@ end
 # By reusing connections, we can reduce the number of TCP packets sent and improve performance
 client = Net::HTTP::Ext.new("http://127.0.0.1:8080")
 
+puts client.default_headers
+
 # Perform multiple requests
 3.times do
   timed_get_request(client, "/")

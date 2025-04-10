@@ -46,8 +46,11 @@ require "net/http/persistent"
 require "timeout"
 require "uri"
 require "json"
+require_relative "version"
 
 class Net::HTTP::Ext
+  include NetHTTPExt
+
   VERB_MAP = {
     head: Net::HTTP::Head,
     get: Net::HTTP::Get,
@@ -79,7 +82,7 @@ class Net::HTTP::Ext
     endpoint,
     name: nil,
     log: nil,
-    default_headers: {},
+    default_headers: { "user-agent" => "Net::HTTP::Ext/#{VERSION}" },
     request_timeout: 30,
     max_retries: 1,
     # Default timeouts
@@ -118,7 +121,7 @@ class Net::HTTP::Ext
   # @param params [Hash] Parameters to send as query parameters
   # @return [Net::HTTPResponse] The HTTP response
   # @example Make a HEAD request
-  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
   #   response = client.head("/users")
   def head(path, headers: {}, params: {})
     request(:head, path, headers: headers, params: params)
@@ -129,7 +132,7 @@ class Net::HTTP::Ext
   # @param params [Hash, String] Parameters to send with the request
   # @return [Net::HTTPResponse] The HTTP response
   # @example Make a simple GET request
-  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
   #   response = client.get("/users")
   def get(path, headers: {}, params: {})
     request(:get, path, headers: headers, params: params)
@@ -140,7 +143,7 @@ class Net::HTTP::Ext
   # @param params [Hash, String] Parameters to send as request body
   # @return [Net::HTTPResponse] The HTTP response
   # @example Create a new resource
-  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
   #   response = client.post("/users", params: {name: "John", email: "john@example.com"})
   def post(path, headers: {}, params: {})
     request(:post, path, headers: headers, params: params)
@@ -151,7 +154,7 @@ class Net::HTTP::Ext
   # @param params [Hash, String] Parameters to send as request body
   # @return [Net::HTTPResponse] The HTTP response
   # @example Update a resource
-  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
   #   response = client.put("/users/123", params: {name: "John Updated"})
   def put(path, headers: {}, params: {})
     request(:put, path, headers: headers, params: params)
@@ -162,7 +165,7 @@ class Net::HTTP::Ext
   # @param params [Hash, String] Parameters to send as query parameters
   # @return [Net::HTTPResponse] The HTTP response
   # @example Delete a resource
-  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
   #   response = client.delete("/users/123")
   def delete(path, headers: {}, params: {})
     request(:delete, path, headers: headers, params: params)
@@ -173,10 +176,24 @@ class Net::HTTP::Ext
   # @param params [Hash, String] Parameters to send as request body
   # @return [Net::HTTPResponse] The HTTP response
   # @example Partially update a resource
-  #   client = PersistentHTTP::Client.new("https://api.example.com")
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
   #   response = client.patch("/users/123", params: {status: "inactive"})
   def patch(path, headers: {}, params: {})
     request(:patch, path, headers: headers, params: params)
+  end
+
+  # @param path [String] The path to request
+  # @param headers [Hash] Additional headers for this request
+  # @param params [Hash, String] Parameters to send with the request
+  # @return [Net::HTTPResponse] The HTTP response
+  # @example Make a simple GET request and automatically parse the JSON response
+  #   client = Net::HTTP::Ext.new("https://api.example.com")
+  #   response = client.get_json("/users")
+  def get_json(path, headers: {}, params: {})
+    response = get(path, headers: headers, params: params)
+    JSON.parse(response.body)
+  rescue JSON::ParserError => e
+    raise PersistentHTTP::RequestError, "Invalid JSON response: #{e.message}"
   end
 
   # Set or update default headers
