@@ -70,7 +70,9 @@ module HTTP
     # @param open_timeout [Integer] Timeout in seconds for connection establishment
     # @param read_timeout [Integer] Timeout in seconds for reading response
     # @param idle_timeout [Integer] How long to keep idle connections open in seconds (maps to keep_alive)
-    # @param **options [Hash] Additional options passed directly to Net::HTTP::Persistent
+    # @param **options Additional options passed directly to Net::HTTP::Persistent
+    # Example:
+    # client = HTTP::Client.new("https://api.example.com", proxy: URI("http://proxy.example.com:8080"))
     def initialize(
       endpoint,
       name: nil,
